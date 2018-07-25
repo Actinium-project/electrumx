@@ -1972,7 +1972,7 @@ class Minexcoin(MinexcoinMixin, Coin):
         'elex01-ams.turinex.eu s t',
         'eu.minexpool.nl s t'
     ]
-	
+
 
 class Actinium(Coin):
     NAME = "Actinium"

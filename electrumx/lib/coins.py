@@ -1992,7 +1992,7 @@ class Actinium(Coin):
     RPC_PORT = 4334
     REORG_LIMIT = 800
     PEERS = [
-        
+        'electrum1.actinium.org'
     ]
 
 

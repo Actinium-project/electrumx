@@ -1972,3 +1972,47 @@ class Minexcoin(MinexcoinMixin, Coin):
         'elex01-ams.turinex.eu s t',
         'eu.minexpool.nl s t'
     ]
+	
+
+class Actinium(Coin):
+    NAME = "Actinium"
+    SHORTNAME = "ACM"
+    NET = "mainnet"
+    XPUB_VERBYTES = bytes.fromhex("0488b21e")
+    XPRV_VERBYTES = bytes.fromhex("0488ade4")
+    P2PKH_VERBYTE = bytes.fromhex("35")
+    P2SH_VERBYTES = [bytes.fromhex("37"), bytes.fromhex("05")]
+    WIF_BYTE = bytes.fromhex("b5")
+    GENESIS_HASH = ('28d77872e23714562f49a1be792c276'
+                    '623c1bbe3fdcf21b6035cfde78b00b824')
+    DESERIALIZER = lib_tx.DeserializerSegWit
+    TX_COUNT = 67949
+    TX_COUNT_HEIGHT = 59579
+    TX_PER_BLOCK = 10
+    RPC_PORT = 4334
+    REORG_LIMIT = 800
+    PEERS = [
+        
+    ]
+
+
+class ActiniumTestnet(Actinium):
+    SHORTNAME = "XAM"
+    NET = "testnet"
+    XPUB_VERBYTES = bytes.fromhex("043587cf")
+    XPRV_VERBYTES = bytes.fromhex("04358394")
+    P2PKH_VERBYTE = bytes.fromhex("2b")
+    P2SH_VERBYTES = [bytes.fromhex("3a"), bytes.fromhex("c4")]
+    WIF_BYTE = bytes.fromhex("ab")
+    GENESIS_HASH = ('7c617cc84dc2bff1497836216d6b850c'
+                    'c4e871359ab1afc2d19ef099f9f81f1b')
+    TX_COUNT = 1440
+    TX_COUNT_HEIGHT = 1439
+    TX_PER_BLOCK = 2
+    RPC_PORT = 4335
+    REORG_LIMIT = 4000
+    PEER_DEFAULT_PORTS = {'t': '51001', 's': '51002'}
+    PEERS = [
+        
+    ]
+

@@ -1989,10 +1989,9 @@ class Actinium(Coin):
     TX_COUNT = 67949
     TX_COUNT_HEIGHT = 59579
     TX_PER_BLOCK = 10
-    RPC_PORT = 4334
+    RPC_PORT = 2300
     REORG_LIMIT = 800
     PEERS = [
-        'electrum1.actinium.org'
     ]
 
 
@@ -2009,7 +2008,7 @@ class ActiniumTestnet(Actinium):
     TX_COUNT = 1440
     TX_COUNT_HEIGHT = 1439
     TX_PER_BLOCK = 2
-    RPC_PORT = 4335
+    RPC_PORT = 2301
     REORG_LIMIT = 4000
     PEER_DEFAULT_PORTS = {'t': '51001', 's': '51002'}
     PEERS = [

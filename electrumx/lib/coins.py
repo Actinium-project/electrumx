@@ -1986,8 +1986,8 @@ class Actinium(Coin):
     GENESIS_HASH = ('28d77872e23714562f49a1be792c276'
                     '623c1bbe3fdcf21b6035cfde78b00b824')
     DESERIALIZER = lib_tx.DeserializerSegWit
-    TX_COUNT = 67949
-    TX_COUNT_HEIGHT = 59579
+    TX_COUNT = 150000
+    TX_COUNT_HEIGHT = 150000
     TX_PER_BLOCK = 10
     RPC_PORT = 2300
     REORG_LIMIT = 800

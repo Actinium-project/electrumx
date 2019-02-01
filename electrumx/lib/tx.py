@@ -27,46 +27,64 @@
 
 '''Transaction-related classes and functions.'''
 
-
 from collections import namedtuple
+from hashlib import blake2s
 
-from electrumx.lib.hash import double_sha256, hash_to_hex_str
+from electrumx.lib.hash import sha256, double_sha256, hash_to_hex_str
+from electrumx.lib.script import OpCodes
 from electrumx.lib.util import (
-    cachedproperty, unpack_int32_from, unpack_int64_from,
-    unpack_uint16_from, unpack_uint32_from, unpack_uint64_from
+    unpack_le_int32_from, unpack_le_int64_from, unpack_le_uint16_from,
+    unpack_be_uint16_from,
+    unpack_le_uint32_from, unpack_le_uint64_from, pack_le_int32, pack_varint,
+    pack_le_uint32, pack_le_int64, pack_varbytes,
 )
+
+ZERO = bytes(32)
+MINUS_1 = 4294967295
 
 
 class Tx(namedtuple("Tx", "version inputs outputs locktime")):
     '''Class representing a transaction.'''
 
-    @cachedproperty
-    def is_coinbase(self):
-        return self.inputs[0].is_coinbase
-
-    # FIXME: add hash as a cached property?
+    def serialize(self):
+        return b''.join((
+            pack_le_int32(self.version),
+            pack_varint(len(self.inputs)),
+            b''.join(tx_in.serialize() for tx_in in self.inputs),
+            pack_varint(len(self.outputs)),
+            b''.join(tx_out.serialize() for tx_out in self.outputs),
+            pack_le_uint32(self.locktime)
+        ))
 
 
 class TxInput(namedtuple("TxInput", "prev_hash prev_idx script sequence")):
     '''Class representing a transaction input.'''
-
-    ZERO = bytes(32)
-    MINUS_1 = 4294967295
-
-    @cachedproperty
-    def is_coinbase(self):
-        return (self.prev_hash == TxInput.ZERO and
-                self.prev_idx == TxInput.MINUS_1)
-
     def __str__(self):
         script = self.script.hex()
         prev_hash = hash_to_hex_str(self.prev_hash)
         return ("Input({}, {:d}, script={}, sequence={:d})"
                 .format(prev_hash, self.prev_idx, script, self.sequence))
 
+    def is_generation(self):
+        '''Test if an input is generation/coinbase like'''
+        return self.prev_idx == MINUS_1 and self.prev_hash == ZERO
+
+    def serialize(self):
+        return b''.join((
+            self.prev_hash,
+            pack_le_uint32(self.prev_idx),
+            pack_varbytes(self.script),
+            pack_le_uint32(self.sequence),
+        ))
+
 
 class TxOutput(namedtuple("TxOutput", "value pk_script")):
-    pass
+
+    def serialize(self):
+        return b''.join((
+            pack_le_int64(self.value),
+            pack_varbytes(self.pk_script),
+        ))
 
 
 class Deserializer(object):
@@ -78,6 +96,8 @@ class Deserializer(object):
     This code is performance sensitive as it is executed 100s of
     millions of times during sync.
     '''
+
+    TX_HASH_FN = staticmethod(double_sha256)
 
     def __init__(self, binary, start=0):
         assert isinstance(binary, bytes)
@@ -101,7 +121,7 @@ class Deserializer(object):
         we process it in the natural serialized order.
         '''
         start = self.cursor
-        return self.read_tx(), double_sha256(self.binary[start:self.cursor])
+        return self.read_tx(), self.TX_HASH_FN(self.binary[start:self.cursor])
 
     def read_tx_and_vsize(self):
         '''Return a (deserialized TX, vsize) pair.'''
@@ -161,27 +181,32 @@ class Deserializer(object):
         return self._read_le_uint64()
 
     def _read_le_int32(self):
-        result, = unpack_int32_from(self.binary, self.cursor)
+        result, = unpack_le_int32_from(self.binary, self.cursor)
         self.cursor += 4
         return result
 
     def _read_le_int64(self):
-        result, = unpack_int64_from(self.binary, self.cursor)
+        result, = unpack_le_int64_from(self.binary, self.cursor)
         self.cursor += 8
         return result
 
     def _read_le_uint16(self):
-        result, = unpack_uint16_from(self.binary, self.cursor)
+        result, = unpack_le_uint16_from(self.binary, self.cursor)
+        self.cursor += 2
+        return result
+
+    def _read_be_uint16(self):
+        result, = unpack_be_uint16_from(self.binary, self.cursor)
         self.cursor += 2
         return result
 
     def _read_le_uint32(self):
-        result, = unpack_uint32_from(self.binary, self.cursor)
+        result, = unpack_le_uint32_from(self.binary, self.cursor)
         self.cursor += 4
         return result
 
     def _read_le_uint64(self):
-        result, = unpack_uint64_from(self.binary, self.cursor)
+        result, = unpack_le_uint64_from(self.binary, self.cursor)
         self.cursor += 8
         return result
 
@@ -189,10 +214,6 @@ class Deserializer(object):
 class TxSegWit(namedtuple("Tx", "version marker flag inputs outputs "
                           "witness locktime")):
     '''Class representing a SegWit transaction.'''
-
-    @cachedproperty
-    def is_coinbase(self):
-        return self.inputs[0].is_coinbase
 
 
 class DeserializerSegWit(Deserializer):
@@ -213,7 +234,7 @@ class DeserializerSegWit(Deserializer):
         marker = self.binary[self.cursor + 4]
         if marker:
             tx = super().read_tx()
-            tx_hash = double_sha256(self.binary[start:self.cursor])
+            tx_hash = self.TX_HASH_FN(self.binary[start:self.cursor])
             return tx, tx_hash, self.binary_length
 
         # Ugh, this is nasty.
@@ -237,7 +258,7 @@ class DeserializerSegWit(Deserializer):
         vsize = (3 * base_size + self.binary_length) // 4
 
         return TxSegWit(version, marker, flag, inputs, outputs, witness,
-                        locktime), double_sha256(orig_ser), vsize
+                        locktime), self.TX_HASH_FN(orig_ser), vsize
 
     def read_tx(self):
         return self._read_tx_parts()[0]
@@ -302,43 +323,56 @@ class DeserializerEquihashSegWit(DeserializerSegWit, DeserializerEquihash):
 class TxJoinSplit(namedtuple("Tx", "version inputs outputs locktime")):
     '''Class representing a JoinSplit transaction.'''
 
-    @cachedproperty
-    def is_coinbase(self):
-        return self.inputs[0].is_coinbase if len(self.inputs) > 0 else False
-
 
 class DeserializerZcash(DeserializerEquihash):
     def read_tx(self):
         header = self._read_le_uint32()
-        overwinterd = ((header >> 31) == 1)
-        if overwinterd:
+        overwintered = ((header >> 31) == 1)
+        if overwintered:
             version = header & 0x7fffffff
-            self._read_le_uint32()  # versionGroupId
+            self.cursor += 4  # versionGroupId
         else:
             version = header
+
+        is_overwinter_v3 = version == 3
+        is_sapling_v4 = version == 4
+
         base_tx = TxJoinSplit(
             version,
             self._read_inputs(),    # inputs
             self._read_outputs(),   # outputs
             self._read_le_uint32()  # locktime
         )
-        if base_tx.version >= 3:
-            self._read_le_uint32()  # expiryHeight
+
+        if is_overwinter_v3 or is_sapling_v4:
+            self.cursor += 4  # expiryHeight
+
+        has_shielded = False
+        if is_sapling_v4:
+            self.cursor += 8  # valueBalance
+            shielded_spend_size = self._read_varint()
+            self.cursor += shielded_spend_size * 384  # vShieldedSpend
+            shielded_output_size = self._read_varint()
+            self.cursor += shielded_output_size * 948  # vShieldedOutput
+            has_shielded = shielded_spend_size > 0 or shielded_output_size > 0
+
         if base_tx.version >= 2:
             joinsplit_size = self._read_varint()
             if joinsplit_size > 0:
-                self.cursor += joinsplit_size * 1802  # JSDescription
+                joinsplit_desc_len = 1506 + (192 if is_sapling_v4 else 296)
+                # JSDescription
+                self.cursor += joinsplit_size * joinsplit_desc_len
                 self.cursor += 32  # joinSplitPubKey
                 self.cursor += 64  # joinSplitSig
+
+        if is_sapling_v4 and has_shielded:
+            self.cursor += 64  # bindingSig
+
         return base_tx
 
 
 class TxTime(namedtuple("Tx", "version time inputs outputs locktime")):
     '''Class representing transaction that has a time field.'''
-
-    @cachedproperty
-    def is_coinbase(self):
-        return self.inputs[0].is_coinbase
 
 
 class DeserializerTxTime(Deserializer):
@@ -350,6 +384,62 @@ class DeserializerTxTime(Deserializer):
             self._read_outputs(),    # outputs
             self._read_le_uint32(),  # locktime
         )
+
+
+class TxTrezarcoin(
+        namedtuple("Tx", "version time inputs outputs locktime txcomment")):
+    '''Class representing transaction that has a time and txcomment field.'''
+
+
+class DeserializerTrezarcoin(Deserializer):
+
+    def read_tx(self):
+        version = self._read_le_int32()
+        time = self._read_le_uint32()
+        inputs = self._read_inputs()
+        outputs = self._read_outputs()
+        locktime = self._read_le_uint32()
+        if version >= 2:
+            txcomment = self._read_varbytes()
+        else:
+            txcomment = b''
+        return TxTrezarcoin(version, time, inputs, outputs, locktime,
+                            txcomment)
+
+    @staticmethod
+    def blake2s_gen(data):
+        version = data[0:1]
+        keyOne = data[36:46]
+        keyTwo = data[58:68]
+        ntime = data[68:72]
+        _nBits = data[72:76]
+        _nonce = data[76:80]
+        _full_merkle = data[36:68]
+        _input112 = data + _full_merkle
+        _key = keyTwo + ntime + _nBits + _nonce + keyOne
+        '''Prepare 112Byte Header '''
+        blake2s_hash = blake2s(key=_key, digest_size=32)
+        blake2s_hash.update(_input112)
+        '''TrezarFlips - Only for Genesis'''
+        return ''.join(map(str.__add__, blake2s_hash.hexdigest()[-2::-2],
+                           blake2s_hash.hexdigest()[-1::-2]))
+
+    @staticmethod
+    def blake2s(data):
+        version = data[0:1]
+        keyOne = data[36:46]
+        keyTwo = data[58:68]
+        ntime = data[68:72]
+        _nBits = data[72:76]
+        _nonce = data[76:80]
+        _full_merkle = data[36:68]
+        _input112 = data + _full_merkle
+        _key = keyTwo + ntime + _nBits + _nonce + keyOne
+        '''Prepare 112Byte Header '''
+        blake2s_hash = blake2s(key=_key, digest_size=32)
+        blake2s_hash.update(_input112)
+        '''TrezarFlips'''
+        return blake2s_hash.digest()
 
 
 class DeserializerReddcoin(Deserializer):
@@ -413,57 +503,135 @@ class DeserializerBitcoinAtom(DeserializerSegWit):
         return self._read_nbytes(header_len)
 
 
+class DeserializerGroestlcoin(DeserializerSegWit):
+    TX_HASH_FN = staticmethod(sha256)
+
+
+class TxInputTokenPay(TxInput):
+    '''Class representing a TokenPay transaction input.'''
+
+    OP_ANON_MARKER = 0xb9
+    # 2byte marker (cpubkey + sigc + sigr)
+    MIN_ANON_IN_SIZE = 2 + (33 + 32 + 32)
+
+    def _is_anon_input(self):
+        return (len(self.script) >= self.MIN_ANON_IN_SIZE and
+                self.script[0] == OpCodes.OP_RETURN and
+                self.script[1] == self.OP_ANON_MARKER)
+
+    def is_generation(self):
+        # Transactions comming in from stealth addresses are seen by
+        # the blockchain as newly minted coins. The reverse, where coins
+        # are sent TO a stealth address, are seen by the blockchain as
+        # a coin burn.
+        if self._is_anon_input():
+            return True
+        return super(TxInputTokenPay, self).is_generation()
+
+
+class TxInputTokenPayStealth(
+        namedtuple("TxInput", "keyimage ringsize script sequence")):
+    '''Class representing a TokenPay stealth transaction input.'''
+
+    def __str__(self):
+        script = self.script.hex()
+        keyimage = bytes(self.keyimage).hex()
+        return ("Input({}, {:d}, script={}, sequence={:d})"
+                .format(keyimage, self.ringsize[1], script, self.sequence))
+
+    def is_generation(self):
+        return True
+
+    def serialize(self):
+        return b''.join((
+            self.keyimage,
+            self.ringsize,
+            pack_varbytes(self.script),
+            pack_le_uint32(self.sequence),
+        ))
+
+
+class DeserializerTokenPay(DeserializerTxTime):
+
+    def _read_input(self):
+        txin = TxInputTokenPay(
+            self._read_nbytes(32),   # prev_hash
+            self._read_le_uint32(),  # prev_idx
+            self._read_varbytes(),   # script
+            self._read_le_uint32(),  # sequence
+        )
+        if txin._is_anon_input():
+            # Not sure if this is actually needed, and seems
+            # extra work for no immediate benefit, but it at
+            # least correctly represents a stealth input
+            raw = txin.serialize()
+            deserializer = Deserializer(raw)
+            txin = TxInputTokenPayStealth(
+                deserializer._read_nbytes(33),  # keyimage
+                deserializer._read_nbytes(3),   # ringsize
+                deserializer._read_varbytes(),  # script
+                deserializer._read_le_uint32()  # sequence
+            )
+        return txin
+
+
 # Decred
 class TxInputDcr(namedtuple("TxInput", "prev_hash prev_idx tree sequence")):
     '''Class representing a Decred transaction input.'''
-
-    ZERO = bytes(32)
-    MINUS_1 = 4294967295
-
-    @cachedproperty
-    def is_coinbase(self):
-        # The previous output of a coin base must have a max value index and a
-        # zero hash.
-        return (self.prev_hash == TxInputDcr.ZERO and
-                self.prev_idx == TxInputDcr.MINUS_1)
 
     def __str__(self):
         prev_hash = hash_to_hex_str(self.prev_hash)
         return ("Input({}, {:d}, tree={}, sequence={:d})"
                 .format(prev_hash, self.prev_idx, self.tree, self.sequence))
 
+    def is_generation(self):
+        '''Test if an input is generation/coinbase like'''
+        return self.prev_idx == MINUS_1 and self.prev_hash == ZERO
+
 
 class TxOutputDcr(namedtuple("TxOutput", "value version pk_script")):
-    '''Class representing a transaction output.'''
+    '''Class representing a Decred transaction output.'''
     pass
 
 
 class TxDcr(namedtuple("Tx", "version inputs outputs locktime expiry "
                              "witness")):
-    '''Class representing transaction that has a time field.'''
-
-    @cachedproperty
-    def is_coinbase(self):
-        return self.inputs[0].is_coinbase
+    '''Class representing a Decred  transaction.'''
 
 
 class DeserializerDecred(Deserializer):
-
     @staticmethod
     def blake256(data):
         from blake256.blake256 import blake_hash
         return blake_hash(data)
 
+    @staticmethod
+    def blake256d(data):
+        from blake256.blake256 import blake_hash
+        return blake_hash(blake_hash(data))
+
+    def read_tx(self):
+        return self._read_tx_parts(produce_hash=False)[0]
+
+    def read_tx_and_hash(self):
+        tx, tx_hash, vsize = self._read_tx_parts()
+        return tx, tx_hash
+
+    def read_tx_and_vsize(self):
+        tx, tx_hash, vsize = self._read_tx_parts(produce_hash=False)
+        return tx, vsize
+
     def read_tx_block(self):
         '''Returns a list of (deserialized_tx, tx_hash) pairs.'''
-        read_tx = self.read_tx
-        txs = [read_tx() for _ in range(self._read_varint())]
-        stxs = [read_tx() for _ in range(self._read_varint())]
+        read = self.read_tx_and_hash
+        txs = [read() for _ in range(self._read_varint())]
+        stxs = [read() for _ in range(self._read_varint())]
         return txs + stxs
 
-    def _read_inputs(self):
-        read_input = self._read_input
-        return [read_input() for i in range(self._read_varint())]
+    def read_tx_tree(self):
+        '''Returns a list of deserialized_tx without tx hashes.'''
+        read_tx = self.read_tx
+        return [read_tx() for _ in range(self._read_varint())]
 
     def _read_input(self):
         return TxInputDcr(
@@ -472,10 +640,6 @@ class DeserializerDecred(Deserializer):
             self._read_byte(),       # tree
             self._read_le_uint32(),  # sequence
         )
-
-    def _read_outputs(self):
-        read_output = self._read_output
-        return [read_output() for _ in range(self._read_varint())]
 
     def _read_output(self):
         return TxOutputDcr(
@@ -496,15 +660,24 @@ class DeserializerDecred(Deserializer):
         script = self._read_varbytes()
         return value_in, block_height, block_index, script
 
-    def read_tx(self):
+    def _read_tx_parts(self, produce_hash=True):
         start = self.cursor
         version = self._read_le_int32()
         inputs = self._read_inputs()
         outputs = self._read_outputs()
         locktime = self._read_le_uint32()
         expiry = self._read_le_uint32()
-        no_witness_tx = b'\x01\x00\x01\x00' + self.binary[start+4:self.cursor]
+        end_prefix = self.cursor
         witness = self._read_witness(len(inputs))
+
+        if produce_hash:
+            # TxSerializeNoWitness << 16 == 0x10000
+            no_witness_header = pack_le_uint32(0x10000 | (version & 0xffff))
+            prefix_tx = no_witness_header + self.binary[start+4:end_prefix]
+            tx_hash = self.blake256(prefix_tx)
+        else:
+            tx_hash = None
+
         return TxDcr(
             version,
             inputs,
@@ -512,4 +685,115 @@ class DeserializerDecred(Deserializer):
             locktime,
             expiry,
             witness
-        ), DeserializerDecred.blake256(no_witness_tx)
+        ), tx_hash, self.cursor - start
+
+
+class DeserializerSmartCash(Deserializer):
+
+    @staticmethod
+    def keccak(data):
+        from Cryptodome.Hash import keccak
+        keccak_hash = keccak.new(digest_bits=256)
+        keccak_hash.update(data)
+        return keccak_hash.digest()
+
+    def read_tx_and_hash(self):
+        from electrumx.lib.hash import sha256
+        start = self.cursor
+        return self.read_tx(), sha256(self.binary[start:self.cursor])
+
+
+class TxBitcoinDiamond(namedtuple("Tx",
+                                  "version preblockhash inputs outputs "
+                                  "locktime")):
+    '''Class representing a transaction.'''
+
+
+class DeserializerBitcoinDiamond(Deserializer):
+    bitcoin_diamond_tx_version = 12
+
+    def read_tx(self):
+        # Return a Deserialized TX.
+        version = self._get_version()
+        if version != self.bitcoin_diamond_tx_version:
+            return Tx(
+                self._read_le_int32(),  # version
+                self._read_inputs(),    # inputs
+                self._read_outputs(),   # outputs
+                self._read_le_uint32()  # locktime
+            )
+        else:
+            return TxBitcoinDiamond(
+                self._read_le_int32(),  # version
+                hash_to_hex_str(self._read_nbytes(32)),  # blockhash
+                self._read_inputs(),  # inputs
+                self._read_outputs(),  # outputs
+                self._read_le_uint32()  # locktime
+            )
+
+    def _get_version(self):
+        result, = unpack_le_int32_from(self.binary, self.cursor)
+        return result
+
+
+class TxBitcoinDiamondSegWit(namedtuple("Tx",
+                                        "version preblockhash marker flag "
+                                        "inputs outputs witness locktime")):
+    '''Class representing a SegWit transaction.'''
+
+
+class DeserializerBitcoinDiamondSegWit(DeserializerBitcoinDiamond,
+                                       DeserializerSegWit):
+    def _read_tx_parts(self):
+        '''Return a (deserialized TX, tx_hash, vsize) tuple.'''
+        start = self.cursor
+        tx_version = self._get_version()
+        if tx_version == self.bitcoin_diamond_tx_version:
+            marker = self.binary[self.cursor + 4 + 32]
+        else:
+            marker = self.binary[self.cursor + 4]
+
+        if marker:
+            tx = super().read_tx()
+            tx_hash = self.TX_HASH_FN(self.binary[start:self.cursor])
+            return tx, tx_hash, self.binary_length
+
+        # Ugh, this is nasty.
+        version = self._read_le_int32()
+        present_block_hash = None
+        if version == self.bitcoin_diamond_tx_version:
+            present_block_hash = hash_to_hex_str(self._read_nbytes(32))
+        orig_ser = self.binary[start:self.cursor]
+
+        marker = self._read_byte()
+        flag = self._read_byte()
+
+        start = self.cursor
+        inputs = self._read_inputs()
+        outputs = self._read_outputs()
+        orig_ser += self.binary[start:self.cursor]
+
+        base_size = self.cursor - start
+        witness = self._read_witness(len(inputs))
+
+        start = self.cursor
+        locktime = self._read_le_uint32()
+        orig_ser += self.binary[start:self.cursor]
+        vsize = (3 * base_size + self.binary_length) // 4
+
+        if present_block_hash is not None:
+            return TxBitcoinDiamondSegWit(
+                version, present_block_hash, marker, flag, inputs, outputs,
+                witness, locktime), self.TX_HASH_FN(orig_ser), vsize
+        else:
+            return TxSegWit(
+                version, marker, flag, inputs, outputs, witness,
+                locktime), self.TX_HASH_FN(orig_ser), vsize
+
+    def read_tx(self):
+        '''Return a (Deserialized TX, TX_HASH) pair.
+
+        The hash needs to be reversed for human display; for efficiency
+        we process it in the natural serialized order.
+        '''
+        return self._read_tx_parts()[0]

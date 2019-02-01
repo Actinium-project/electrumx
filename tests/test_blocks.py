@@ -32,6 +32,7 @@ import pytest
 
 from electrumx.lib.coins import Coin
 from electrumx.lib.hash import hex_str_to_hash
+from electrumx.lib.util import pack_be_uint32
 
 BLOCKS_DIR = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), 'blocks')
@@ -61,7 +62,8 @@ def test_block(block_details):
     raw_block = unhexlify(block_info['block'])
     block = coin.block(raw_block, block_info['height'])
 
-    assert coin.header_hash(block.header) == hex_str_to_hash(block_info['hash'])
+    assert coin.header_hash(
+        block.header) == hex_str_to_hash(block_info['hash'])
     assert (coin.header_prevhash(block.header)
             == hex_str_to_hash(block_info['previousblockhash']))
     for n, (tx, txid) in enumerate(block.transactions):
